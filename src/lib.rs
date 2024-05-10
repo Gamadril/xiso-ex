@@ -4,14 +4,16 @@ use std::{
     os::unix::fs::MetadataExt,
     path::PathBuf,
     str::FromStr,
+    time::Duration,
 };
 
 use pbr::{ProgressBar, Units};
 use suppaftp::{FtpStream, Status};
-use url::Url;
 
 const OFFSET_XGD3: u64 = 0x2080000;
 const OFFSET_XGD2: u64 = 0xFD90000;
+const SECTOR_SIZE: u32 = 2048;
+const HEADER_OFFSET: u64 = 0x10000;
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum FsMode {
@@ -33,7 +35,6 @@ pub struct IsoMeta {
     pub root_offset: u64,
     pub root_dir_sector: u32,
     pub root_dir_size: u32,
-    pub sector_size: u32,
 }
 
 pub struct XIso {
@@ -78,10 +79,11 @@ impl XIso {
         if out_path.starts_with("ftp://") {
             self.fs_mode = FsMode::FTP;
 
-            let url = Url::parse(out_path.to_str().unwrap())
+            let url = url_parse::core::Parser::new(None)
+                .parse(out_path.to_str().unwrap())
                 .map_err(|e| format!("Error parsing ftp url {:?}: {}", &out_path, e.to_string()))?;
 
-            let user = url.username().is_empty().then_some("xbox").unwrap();
+            let user = url.username().is_none().then_some("xbox").unwrap();
             let password = url.password().is_none().then_some("xbox").unwrap();
 
             let mut ftp_stream = FtpStream::connect(
@@ -99,12 +101,11 @@ impl XIso {
             ftp_stream
                 .login(user, password)
                 .map_err(|e| format!("Error connecting to ftp server {:?}: {}", &url, e))?;
-            self.ftp_stream = Some(ftp_stream.active_mode());
+            self.ftp_stream = Some(ftp_stream.active_mode(Duration::from_secs(10)));
         }
 
         self.create_out_dir(out_path)?;
 
-        // TODO how without cloning?
         let mut entries = self.root.clone();
         if skip_update {
             entries = entries
@@ -139,18 +140,11 @@ impl XIso {
             std::fs::create_dir_all(&out_path)
                 .map_err(|e| format!("Error creating output directory {:?}: {}", &out_path, e))?;
         } else if self.fs_mode == FsMode::FTP {
-            let url = Url::parse(out_path.to_str().unwrap())
+            let url = url_parse::core::Parser::new(None)
+                .parse(out_path.to_str().unwrap())
                 .map_err(|e| format!("Error parsing ftp url {:?}: {}", &out_path, e.to_string()))?;
 
-            let segments = match url.path_segments() {
-                Some(segments) => segments
-                    .map(|v| urlencoding::decode(v).unwrap().into_owned())
-                    .collect::<Vec<_>>(),
-                None => {
-                    return Err(format!("Error parsing url parts of {:?}", &url));
-                }
-            };
-
+            let segments = &url.path_segments().unwrap();
             let ftp_stream = self.ftp_stream.as_mut().unwrap();
 
             for segment in segments {
@@ -161,8 +155,7 @@ impl XIso {
                         .collect::<Vec<_>>(),
                     Err(err) => {
                         return Err(format!(
-                            "Error listing directory on ftp server {:?}: {}",
-                            &url.path(),
+                            "Error listing directory on ftp server: {}",
                             err
                         ));
                     }
@@ -181,10 +174,8 @@ impl XIso {
 
                 ftp_stream.cwd(&segment).map_err(|e| {
                     format!(
-                        "Error changing directory '{}' on ftp server {:?}: {}",
-                        &segment,
-                        &url.path(),
-                        e
+                        "Error changing directory '{}' on ftp server: {}",
+                        &segment, e
                     )
                 })?;
             }
@@ -197,10 +188,10 @@ impl XIso {
         if self.fs_mode == FsMode::Local {
             return Ok(dir_path.exists());
         } else if self.fs_mode == FsMode::FTP {
-            let url = Url::parse(dir_path.to_str().unwrap())
+            let url = url_parse::core::Parser::new(None)
+                .parse(dir_path.to_str().unwrap())
                 .map_err(|e| format!("Error parsing ftp url {:?}: {}", &dir_path, e.to_string()))?;
-
-            let server_path = urlencoding::decode(url.path()).unwrap().into_owned();
+            let server_path = url.path.unwrap().join("/");
             let ftp_stream = self.ftp_stream.as_mut().unwrap();
 
             match ftp_stream.cwd(&server_path) {
@@ -220,10 +211,11 @@ impl XIso {
             return std::fs::create_dir(dir_path)
                 .map_err(|e| format!("Error creating output directory {:?}: {}", dir_path, e));
         } else if self.fs_mode == FsMode::FTP {
-            let url = Url::parse(dir_path.to_str().unwrap())
+            let url = url_parse::core::Parser::new(None)
+                .parse(dir_path.to_str().unwrap())
                 .map_err(|e| format!("Error parsing ftp url {:?}: {}", &dir_path, e.to_string()))?;
 
-            let server_path = urlencoding::decode(url.path()).unwrap().into_owned();
+            let server_path = url.path.unwrap().join("/");
             let ftp_stream = self.ftp_stream.as_mut().unwrap();
 
             ftp_stream
@@ -258,7 +250,7 @@ impl XIso {
     }
 
     fn extract_record(&mut self, entry: &Record, output_root: &PathBuf) -> Result<(), String> {
-        let position = self.meta.root_offset + entry.sector as u64 * self.meta.sector_size as u64;
+        let position = self.meta.root_offset + entry.sector as u64 * SECTOR_SIZE as u64;
         self.reader
             .seek(SeekFrom::Start(position))
             .map_err(|_| format!("Unable to jump to record at {}. Broken ISO?", position))?;
@@ -272,10 +264,11 @@ impl XIso {
                 .map_err(|e| format!("Error creating file {:?}: {}", &out_file, e))?;
             file_writer = Some(BufWriter::new(file));
         } else if self.fs_mode == FsMode::FTP {
-            let url = Url::parse(out_file.to_str().unwrap())
+            let url = url_parse::core::Parser::new(None)
+                .parse(out_file.to_str().unwrap())
                 .map_err(|e| format!("Error parsing ftp url {:?}: {}", &out_file, e.to_string()))?;
 
-            let server_path = urlencoding::decode(url.path()).unwrap().into_owned();
+            let server_path = url.path.unwrap().join("/");
             let ftp_stream = self.ftp_stream.as_mut().unwrap();
 
             let file_size = ftp_check_file_size(ftp_stream, &out_file)?;
@@ -375,7 +368,11 @@ impl XIso {
                 ));
             }
         } else if self.fs_mode == FsMode::Local {
-            file_writer.as_mut().unwrap().flush().map_err(|e| format!("Error flushing file writer: {}", e.to_string()))?;
+            file_writer
+                .as_mut()
+                .unwrap()
+                .flush()
+                .map_err(|e| format!("Error flushing file writer: {}", e.to_string()))?;
             let metadata = std::fs::metadata(&out_file).map_err(|e| {
                 format!(
                     "Error getting metadata for {:?}: {}",
@@ -398,12 +395,12 @@ impl XIso {
 }
 
 fn ftp_check_file_size(ftp_stream: &mut FtpStream, out_file: &PathBuf) -> Result<i32, String> {
-    let url = Url::parse(out_file.to_str().unwrap())
+    let url = url_parse::core::Parser::new(None)
+        .parse(out_file.to_str().unwrap())
         .map_err(|e| format!("Error parsing ftp url {:?}: {}", &out_file, e.to_string()))?;
+    let server_path = url.path.unwrap().join("/");
 
-    let server_path = urlencoding::decode(url.path()).unwrap().into_owned();
-
-    let mut file_size = -1;
+    let file_size;
     match ftp_stream.size(&server_path) {
         Ok(size) => file_size = size as i32,
         Err(e) => match e {
@@ -430,15 +427,13 @@ fn ftp_check_file_size(ftp_stream: &mut FtpStream, out_file: &PathBuf) -> Result
 
 fn get_iso_meta<R: Read + Seek>(reader: &mut R) -> Result<IsoMeta, String> {
     let root_offset;
-    let sector_size = 2048;
-    let header_offset: u64 = 0x10000;
 
-    let mut found = check_magic_string(reader, header_offset + OFFSET_XGD2)
+    let mut found = check_magic_string(reader, HEADER_OFFSET + OFFSET_XGD2)
         .map_err(|_| format!("Error detecting XISO type"))?;
     if found {
         root_offset = OFFSET_XGD2;
     } else {
-        found = check_magic_string(reader, header_offset + OFFSET_XGD3)
+        found = check_magic_string(reader, HEADER_OFFSET + OFFSET_XGD3)
             .map_err(|_| format!("Error detecting XISO type"))?;
         if found {
             root_offset = OFFSET_XGD3;
@@ -457,8 +452,7 @@ fn get_iso_meta<R: Read + Seek>(reader: &mut R) -> Result<IsoMeta, String> {
     Ok(IsoMeta::new(
         root_offset,
         root_dir_sector,
-        root_dir_size,
-        sector_size,
+        root_dir_size
     ))
 }
 
@@ -479,14 +473,14 @@ fn parse_dir<R: Read + Seek>(
 ) -> Result<Vec<Record>, Error> {
     let mut entries = Vec::<Record>::new();
 
-    let mut sector_count = size / iso_meta.sector_size;
-    if size % iso_meta.sector_size > 0 {
+    let mut sector_count = size / SECTOR_SIZE;
+    if size % SECTOR_SIZE > 0 {
         sector_count += 1;
     }
 
     for i in 0..sector_count {
         let sector_position =
-            ((sector + i) as u64) * (iso_meta.sector_size as u64) + iso_meta.root_offset;
+            ((sector + i) as u64) * (SECTOR_SIZE as u64) + iso_meta.root_offset;
         reader.seek(SeekFrom::Start(sector_position))?;
 
         while let Some(entry) = Record::parse(reader, iso_meta)? {
@@ -583,13 +577,11 @@ impl IsoMeta {
         root_offset: u64,
         root_dir_sector: u32,
         root_dir_size: u32,
-        sector_size: u32,
     ) -> Self {
         Self {
             root_offset,
             root_dir_sector,
             root_dir_size,
-            sector_size,
-        }
+       }
     }
 }

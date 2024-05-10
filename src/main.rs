@@ -17,7 +17,7 @@ struct Cli {
     #[arg(name = "iso")]
     input: PathBuf,
 
-    /// Output directory to extract content to
+    /// Output directory or FTP url to extract content to
     #[arg(short, long)]
     out: Option<PathBuf>,
 }
