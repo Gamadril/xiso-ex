@@ -10,6 +10,7 @@ clap = { version = "4.5.4", features = ["derive"] }
 pbr = "1.1.1"
 suppaftp = "^5.2.0"
 url-parse = "1.0.7"
+binrw = "0.13.3"
 
 [profile.release]
 opt-level = 'z'     # Optimize for size

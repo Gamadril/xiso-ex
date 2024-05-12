@@ -1,19 +1,20 @@
 use std::{
     cmp::min,
-    io::{BufReader, BufWriter, Error, Read, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::unix::fs::MetadataExt,
     path::PathBuf,
     str::FromStr,
     time::Duration,
 };
 
+use binrw::BinRead;
 use pbr::{ProgressBar, Units};
 use suppaftp::{FtpStream, Status};
 
+const HEADER_OFFSET: u64 = 0x10000;
 const OFFSET_XGD3: u64 = 0x2080000;
 const OFFSET_XGD2: u64 = 0xFD90000;
 const SECTOR_SIZE: u32 = 2048;
-const HEADER_OFFSET: u64 = 0x10000;
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum FsMode {
@@ -21,20 +22,29 @@ pub enum FsMode {
     FTP,
 }
 
-#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Clone)]
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Clone, BinRead)]
+#[br(little)]
 pub struct Record {
-    pub name: String,
+    pub left_offset: u16,
+    pub right_offset: u16,
     pub sector: u32,
     pub size: u32,
     pub attributes: u8,
+    name_len: u8,
+    #[br(count = name_len)]
+    #[br(map = |s: Vec<u8>|String::from_utf8_lossy(&s).to_string(), align_after = 4)]
+    pub name: String,
+    #[br(ignore)]
     pub subdirectory: Option<Vec<Record>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, BinRead)]
+#[br(little, magic = b"MICROSOFT*XBOX*MEDIA")]
 pub struct IsoMeta {
-    pub root_offset: u64,
     pub root_dir_sector: u32,
     pub root_dir_size: u32,
+    #[br(ignore)]
+    pub root_offset: u64,
 }
 
 pub struct XIso {
@@ -154,10 +164,7 @@ impl XIso {
                         .map(|entry| suppaftp::list::File::from_str(entry).unwrap())
                         .collect::<Vec<_>>(),
                     Err(err) => {
-                        return Err(format!(
-                            "Error listing directory on ftp server: {}",
-                            err
-                        ));
+                        return Err(format!("Error listing directory on ftp server: {}", err));
                     }
                 };
 
@@ -426,43 +433,29 @@ fn ftp_check_file_size(ftp_stream: &mut FtpStream, out_file: &PathBuf) -> Result
 }
 
 fn get_iso_meta<R: Read + Seek>(reader: &mut R) -> Result<IsoMeta, String> {
-    let root_offset;
+    let mut root_offset = OFFSET_XGD2;
+    let mut meta;
 
-    let mut found = check_magic_string(reader, HEADER_OFFSET + OFFSET_XGD2)
-        .map_err(|_| format!("Error detecting XISO type"))?;
-    if found {
-        root_offset = OFFSET_XGD2;
-    } else {
-        found = check_magic_string(reader, HEADER_OFFSET + OFFSET_XGD3)
-            .map_err(|_| format!("Error detecting XISO type"))?;
-        if found {
-            root_offset = OFFSET_XGD3;
-        } else {
-            return Err(format!("Unsupported XISO format"));
-        }
+    reader
+        .seek(SeekFrom::Start(root_offset + HEADER_OFFSET))
+        .map_err(|e| format!("Error changing read position: {}", e))?;
+    meta = IsoMeta::read(reader).ok();
+
+    if meta.is_none() {
+        root_offset = OFFSET_XGD3;
+        reader
+            .seek(SeekFrom::Start(root_offset + HEADER_OFFSET))
+            .map_err(|e| format!("Error changing read position: {}", e))?;
+        meta = IsoMeta::read(reader).ok();
     }
 
-    let mut buf = [0; 4];
-    reader.read_exact(&mut buf).unwrap();
-    let root_dir_sector = u32::from_le_bytes(buf);
+    if meta.is_none() {
+        return Err(format!("Unsupported XISO format"));
+    }
+    let mut meta = meta.unwrap();
+    meta.root_offset = root_offset;
 
-    reader.read_exact(&mut buf).unwrap();
-    let root_dir_size = u32::from_le_bytes(buf);
-
-    Ok(IsoMeta::new(
-        root_offset,
-        root_dir_sector,
-        root_dir_size
-    ))
-}
-
-fn check_magic_string<R: Read + Seek>(reader: &mut R, offset: u64) -> Result<bool, Error> {
-    let mut buffer = [0; 20];
-
-    reader.seek(SeekFrom::Start(offset))?;
-    reader.read_exact(&mut buffer)?;
-
-    Ok("MICROSOFT*XBOX*MEDIA".as_bytes() == buffer)
+    Ok(meta)
 }
 
 fn parse_dir<R: Read + Seek>(
@@ -470,7 +463,7 @@ fn parse_dir<R: Read + Seek>(
     iso_meta: &IsoMeta,
     size: u32,
     sector: u32,
-) -> Result<Vec<Record>, Error> {
+) -> Result<Vec<Record>, binrw::Error> {
     let mut entries = Vec::<Record>::new();
 
     let mut sector_count = size / SECTOR_SIZE;
@@ -479,8 +472,7 @@ fn parse_dir<R: Read + Seek>(
     }
 
     for i in 0..sector_count {
-        let sector_position =
-            ((sector + i) as u64) * (SECTOR_SIZE as u64) + iso_meta.root_offset;
+        let sector_position = ((sector + i) as u64) * (SECTOR_SIZE as u64) + iso_meta.root_offset;
         reader.seek(SeekFrom::Start(sector_position))?;
 
         while let Some(entry) = Record::parse(reader, iso_meta)? {
@@ -516,55 +508,24 @@ impl Record {
     pub fn parse<R: Read + Seek>(
         reader: &mut R,
         iso_meta: &IsoMeta,
-    ) -> Result<Option<Record>, Error> {
-        let mut buf8 = [0; 1];
-        let mut buf16 = [0; 2];
-        let mut buf32 = [0; 4];
+    ) -> Result<Option<Record>, binrw::Error> {
+        let mut record = Record::read(reader)?;
 
-        reader.read_exact(&mut buf16)?;
-        let left = u16::from_le_bytes(buf16);
-        reader.read_exact(&mut buf16)?;
-        let right = u16::from_le_bytes(buf16);
-
-        if left == 0xffff || right == 0xffff {
+        if record.left_offset == 0xffff || record.right_offset == 0xffff {
             return Ok(None);
         }
 
-        reader.read_exact(&mut buf32)?;
-        let sector = u32::from_le_bytes(buf32);
-        reader.read_exact(&mut buf32)?;
-        let size = u32::from_le_bytes(buf32);
-
-        reader.read_exact(&mut buf8)?;
-        let attributes = buf8[0];
-
-        reader.read_exact(&mut buf8)?;
-        let name_length = buf8[0];
-
-        let mut name = vec![0; name_length as usize];
-        reader.read_exact(&mut name)?;
-        let name = String::from_utf8_lossy(&name).into_owned();
-
-        let alignment_mismatch = ((4 - reader.stream_position()? % 4) % 4) as i64;
-        reader.seek(SeekFrom::Current(alignment_mismatch))?;
-
-        let is_directory = attributes & 0x10 == 0x10;
-        let subdirectory = if is_directory {
+        let is_directory = record.attributes & 0x10 == 0x10;
+        record.subdirectory = if is_directory {
             let cur_pos = reader.stream_position()?;
-            let subdir = parse_dir(reader, &iso_meta, size, sector)?;
+            let subdir = parse_dir(reader, &iso_meta, record.size, record.sector)?;
             reader.seek(SeekFrom::Start(cur_pos))?;
             Some(subdir)
         } else {
             None
         };
 
-        Ok(Some(Record {
-            sector,
-            size,
-            attributes,
-            name,
-            subdirectory,
-        }))
+        Ok(Some(record))
     }
 
     pub fn is_dir(&self) -> bool {
@@ -573,15 +534,11 @@ impl Record {
 }
 
 impl IsoMeta {
-    pub fn new(
-        root_offset: u64,
-        root_dir_sector: u32,
-        root_dir_size: u32,
-    ) -> Self {
+    pub fn new(root_offset: u64, root_dir_sector: u32, root_dir_size: u32) -> Self {
         Self {
             root_offset,
             root_dir_sector,
             root_dir_size,
-       }
+        }
     }
 }
