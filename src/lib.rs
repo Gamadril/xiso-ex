@@ -5,7 +5,6 @@ mod meta;
 use std::{
     cmp::min,
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
-    os::unix::fs::MetadataExt,
     path::PathBuf,
     str::FromStr,
 };
@@ -265,7 +264,7 @@ impl XIso {
                     e.to_string()
                 )
             })?;
-            if metadata.size() != entry.size as u64 {
+            if metadata.len() != entry.size as u64 {
                 return Err(format!(
                     "File verification failed. {:?} is corrupted.",
                     &out_file
