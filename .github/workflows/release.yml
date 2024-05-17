@@ -57,7 +57,7 @@ jobs:
         uses: thedoctor0/zip-release@0.7.5
         with:
           filename: 'xiso-ex-windows.zip'
-          path: "%CD%\target\release\xiso-ex.exe"
+          path: "%CD%/target/release/xiso-ex.exe"
       - name: Upload Release
         uses: ncipollo/release-action@v1.12.0
         with:
