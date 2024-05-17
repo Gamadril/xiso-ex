@@ -127,9 +127,10 @@ impl FtpClient {
                     let path = PathBuf::from(out_file);
                     let parent = path.parent().unwrap().to_string_lossy();
                     let file = path.file_name().unwrap().to_string_lossy();
+                    self.cwd(&parent)?;
                     let list = self
                         .stream
-                        .list(Some(&parent))
+                        .list(None)
                         .map_err(|e| format!("ftp list error: {}", e))?;
                     file_size = list
                         .iter()
