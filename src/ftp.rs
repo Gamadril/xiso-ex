@@ -1,3 +1,5 @@
+use std::{path::PathBuf, str::FromStr};
+
 use suppaftp::{FtpStream, Status};
 use url_parse::url::Url;
 
@@ -47,7 +49,7 @@ impl FtpClient {
             let dir_exists = self.exists(segment)?;
 
             if !dir_exists {
-                self.mkdir(segment)?;                
+                self.mkdir(segment)?;
             }
             cur_dir.push(segment);
             self.cwd(cur_dir.join("/").as_str())?;
@@ -108,10 +110,10 @@ impl FtpClient {
             .map_err(|e| format!("Error changing directory '{}' on ftp server: {}", &path, e));
     }
 
-    pub fn get_file_size(&mut self, out_file: &str) -> Result<i32, String> {
-        let file_size;
+    pub fn get_file_size(&mut self, out_file: &str) -> Result<i64, String> {
+        let file_size: i64;
         match self.stream.size(out_file) {
-            Ok(size) => file_size = size as i32,
+            Ok(size) => file_size = size as i64,
             Err(e) => match e {
                 suppaftp::FtpError::UnexpectedResponse(ref response) => {
                     if response.status == Status::FileUnavailable {
@@ -119,6 +121,23 @@ impl FtpClient {
                     } else {
                         return Err(format!("ftp file size error: {}", e.to_string()));
                     }
+                }
+                suppaftp::FtpError::BadResponse => {
+                    // ftp server bug with integer overflow, use list command
+                    let path = PathBuf::from(out_file);
+                    let parent = path.parent().unwrap().to_string_lossy();
+                    let file = path.file_name().unwrap().to_string_lossy();
+                    let list = self
+                        .stream
+                        .list(Some(&parent))
+                        .map_err(|e| format!("ftp list error: {}", e))?;
+                    file_size = list
+                        .iter()
+                        .map(|e| suppaftp::list::File::from_str(e).unwrap())
+                        .filter(|e| e.name() == file)
+                        .last()
+                        .unwrap()
+                        .size() as i64;
                 }
                 _ => return Err(format!("ftp file size error: {}", e.to_string())),
             },

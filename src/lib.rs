@@ -174,7 +174,7 @@ impl XIso {
             let file_size = ftp.get_file_size(&out_file)?;
             if file_size == -1 {
                 ftp_writer = Some(ftp.put(&out_file)?);
-            } else if file_size != entry.size as i32 {
+            } else if file_size != entry.size as i64 {
                 println!("Corrupt remote file: {}, Replacing.", &out_file); // TODO resuming?
                 ftp_writer = Some(ftp.put(&out_file)?);
             } else {
@@ -246,7 +246,7 @@ impl XIso {
 
             let out_file = &out_file;
             let file_size = ftp.get_file_size(&out_file)?;
-            if file_size != entry.size as i32 {
+            if file_size != entry.size as i64 {
                 return Err(format!(
                     "File verification failed. {:?} is corrupted.",
                     &out_file
