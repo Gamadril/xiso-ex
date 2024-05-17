@@ -2,15 +2,19 @@
 name = "xiso-ex"
 version = "0.1.0"
 author = "Gamadril"
-about = "Extracts content of Xbox360 ISO files"
+about = "Extracts content of Xbox360 ISO files to local folder or FTP server"
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 pbr = "1.1.1"
 suppaftp = "^5.2.0"
-url-parse = "1.0.7"
+url-parse = "1.0.8"
 binrw = "0.13.3"
+
+[features]
+default = []
+alt_parser = []
 
 [profile.release]
 opt-level = 'z'     # Optimize for size

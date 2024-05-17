@@ -1,41 +1,9 @@
-use clap::{Args, Parser};
-use std::path::PathBuf;
+mod cli;
+use clap::Parser;
 use xiso_ex::XIso;
 
-
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Cli {
-    #[command(flatten)]
-    mode: Mode,
-
-    /// Skip System Update if present
-    #[arg(short, long)]
-    skip_update: bool,
-
-    /// Path to the ISO file
-    #[arg(name = "iso")]
-    input: PathBuf,
-
-    /// Output directory or FTP url to extract content to
-    #[arg(short, long)]
-    out: Option<PathBuf>,
-}
-
-#[derive(Args, Debug)]
-#[group(multiple = false)]
-struct Mode {
-    /// Extract content of the ISO file (default)
-    #[arg(short = 'x', long)]
-    extract: bool,
-
-    /// List content of the ISO file
-    #[arg(short, long)]
-    list: bool,
-}
-
 fn main() -> Result<(), String> {
-    let cli = Cli::parse();
+    let cli = cli::Cli::parse();
 
     //let input_path = std::path::absolute(cli.input).unwrap();
     let input_path = cli.input;
@@ -49,7 +17,7 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
 
-    let output_path = cli.out.unwrap_or(input_path.with_extension(""));
+    let output_path = cli.out.unwrap_or(input_path.with_extension("").to_string_lossy().to_string());
 
     println!(
         "Extracting content of {:?} to {:?}",
