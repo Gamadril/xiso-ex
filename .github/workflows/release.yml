@@ -23,7 +23,7 @@ jobs:
         uses: ncipollo/release-action@v1.12.0
         with:
           allowUpdates: true
-          artifacts: "xiso-ex-linux.zip"
+          artifacts: "target/release/xiso-ex-linux.zip"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   macos:
@@ -43,7 +43,7 @@ jobs:
         uses: ncipollo/release-action@v1.12.0
         with:
           allowUpdates: true
-          artifacts: "xiso-ex-macos.zip"
+          artifacts: "target/release/xiso-ex-macos.zip"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   windows:
@@ -63,5 +63,5 @@ jobs:
         uses: ncipollo/release-action@v1.12.0
         with:
           allowUpdates: true
-          artifacts: "xiso-ex-windows.zip"
+          artifacts: "target/release/xiso-ex-windows.zip"
           token: ${{ secrets.GITHUB_TOKEN }}
